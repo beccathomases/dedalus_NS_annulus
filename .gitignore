@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Dedalus outputs / data
+snapshots*/
+analysis*/
+*.h5
+*.hdf5
+*.nc
+*.dat
+
+# Logs / temp
+*.log
+*.out
+*.err
+*.tmp
