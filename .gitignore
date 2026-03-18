@@ -10,6 +10,7 @@ analysis*/
 *.hdf5
 *.nc
 *.dat
+Re*/
 
 # Logs / temp
 *.log
