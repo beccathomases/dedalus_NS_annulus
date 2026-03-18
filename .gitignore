@@ -6,14 +6,30 @@ __pycache__/
 # Dedalus outputs / data
 snapshots*/
 analysis*/
+checkpoints/
 *.h5
 *.hdf5
 *.nc
 *.dat
-Re*/
 
-# Logs / temp
+# macOS
+.DS_Store
+
+# Local data / figures / movies
+*.mat
+*.fig
+*.npz
+*.mp4
+
+# Slurm / logs / temp
+slurm-*.out
 *.log
 *.out
 *.err
 *.tmp
+
+# Local run folders
+Re40_*/
+Re40_caseA/
+Re40_caseB/
+Re40_mpitest_t20/
