@@ -133,7 +133,7 @@ run_dir = os.path.join(base_run_root, case_label, segment_label)
 
 Re_target = 50.0
 
-restart_mode = ""
+restart_mode = "none"
 restart_file = ""# "/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus/Re10_caseA/seg01_from_rest_snap0p1/checkpoints/checkpoints_s21.h5"
 restart_index = -1
 
