@@ -127,7 +127,7 @@ print(f"MPI hello from rank {rank} of {size}", flush=True)
 # -------------------------
 
 base_run_root = "/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus"
-case_label = "Re50_trials_Ap01"
+case_label = "Re50_trials_Ap001"
 segment_label = "seg01_start_t100_snap1"
 run_dir = os.path.join(base_run_root, case_label, segment_label)
 
@@ -146,7 +146,7 @@ max_dt = 1e-4
 Ri, Ro = 1.0, 8.0
 Nphi, Nr = 256, 512
 
-Amp = 0.01
+Amp = 1e-3
 
 if rank == 0:
     logger.info(f"run_dir = {run_dir}")
