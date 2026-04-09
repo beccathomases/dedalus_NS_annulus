@@ -126,27 +126,125 @@ print(f"MPI hello from rank {rank} of {size}", flush=True)
 # Case / segment organization
 # -------------------------
 
-base_run_root = "/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus"
-case_label = "Re50_trials_Ap01"
-segment_label = "seg02_restart_t200_snap1"
-run_dir = os.path.join(base_run_root, case_label, segment_label)
+from pathlib import Path
+import re
+
+# ============================================================
+# User-set run parameters
+# ============================================================
+base_run_root = Path("/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus")
 
 Re_target = 50.0
+Amp       = 0.1
 
-restart_mode = "full"
-restart_file = "/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus/Re50_trials_Ap01/seg01_start_t100_snap1/checkpoints/checkpoints_s11.h5"
-restart_index = -1
+t0 = 0.0     # physical start time of this segment
+t1 = 10.0     # physical end time of this segment
 
-segment_duration = 100.01
+restart_index = -1   # usually last saved state in checkpoint file
+manual_restart_file = ""   # leave empty for automatic restart lookup
 
-snapshot_dt = 1.0
-checkpoint_dt = 10.0
-max_dt = 1e-4
+checkpoint_dt = 1.0
+snapshot_dt   = 50.0
+max_dt        = 1e-4
 
 Ri, Ro = 1.0, 8.0
 Nphi, Nr = 256, 512
 
-Amp = .01
+
+# ============================================================
+# Helpers for clean naming
+# ============================================================
+def amp_tag(a, ndp=8):
+    """
+    0.1   -> p1
+    0.01  -> p01
+    0.001 -> p001
+    1.25  -> 1p25
+    """
+    s = f"{a:.{ndp}f}".rstrip("0").rstrip(".")
+    if s.startswith("0."):
+        s = "p" + s[2:]
+    else:
+        s = s.replace(".", "p")
+    s = s.replace("-", "m")
+    return s
+
+def time_tag(t, width=8, ndp=2):
+    """
+    0.0    -> 00000p00
+    100.0  -> 00100p00
+    100.01 -> 00100p01
+    """
+    return f"{t:0{width}.{ndp}f}".replace(".", "p")
+
+def case_name(Re, amp):
+    return f"Re{int(Re):d}_A{amp_tag(amp)}"
+
+def segment_name(t0, t1):
+    return f"seg_t{time_tag(t0)}_to_t{time_tag(t1)}"
+
+def checkpoint_sort_key(path_obj):
+    """
+    Sort checkpoints_s1.h5, checkpoints_s2.h5, ..., checkpoints_s10.h5 correctly.
+    """
+    m = re.search(r"_s(\d+)\.h5$", path_obj.name)
+    return int(m.group(1)) if m else -1
+
+def latest_checkpoint_file(checkpoint_dir):
+    checkpoint_dir = Path(checkpoint_dir)
+    files = sorted(checkpoint_dir.glob("*.h5"), key=checkpoint_sort_key)
+    if not files:
+        raise FileNotFoundError(f"No checkpoint files found in {checkpoint_dir}")
+    return str(files[-1])
+
+def previous_segment_bounds(t0, t1):
+    dt = t1 - t0
+    if dt <= 0:
+        raise ValueError(f"Need t1 > t0, got t0={t0}, t1={t1}")
+    return t0 - dt, t0
+
+
+# ============================================================
+# Derived paths and restart logic
+# ============================================================
+case_label    = case_name(Re_target, Amp)
+segment_label = segment_name(t0, t1)
+
+case_dir = base_run_root / case_label
+run_dir  = case_dir / segment_label
+
+if manual_restart_file:
+    restart_mode = "checkpoint"
+    restart_file = manual_restart_file
+
+elif abs(t0) < 1e-14:
+    restart_mode = "none"
+    restart_file = ""
+
+else:
+    prev_t0, prev_t1 = previous_segment_bounds(t0, t1)
+    prev_segment_label = segment_name(prev_t0, prev_t1)
+    prev_checkpoint_dir = case_dir / prev_segment_label / "checkpoints"
+    restart_file = latest_checkpoint_file(prev_checkpoint_dir)
+    restart_mode = "checkpoint"
+
+segment_duration = t1 - t0
+
+
+# ============================================================
+# Print a summary to make mistakes obvious
+# ============================================================
+print("--------------------------------------------------")
+print(f"case_label     = {case_label}")
+print(f"segment_label  = {segment_label}")
+print(f"run_dir        = {run_dir}")
+print(f"restart_mode   = {restart_mode}")
+print(f"restart_file   = {restart_file if restart_file else '(none)'}")
+print(f"segment t0->t1 = {t0} -> {t1}")
+print("--------------------------------------------------")
+
+
+
 
 if rank == 0:
     logger.info(f"run_dir = {run_dir}")
@@ -155,24 +253,6 @@ if rank == 0:
     os.makedirs(run_dir, exist_ok=True)
 comm.Barrier()
 
-# Restart choices:
-#   "none"   = start from rest
-#   "full"   = exact continuation from checkpoint (preferred for true restart)
-#   "u_only" = restart only velocity, reset p/tau (good for snapshot-based restart)
-#   "u_refine" = interpolate velocity to a new grid
-#restart_mode = "none"
-#restart_file = ""  
-#restart_file =  os.path.join(case_label, "seg01_from_rest_snap0p1", "checkpoints", "checkpoints_s7.h5")
-
-#restart_index = -1
-
-# Run this segment for this much additional solver time
-#segment_duration = 50
-
-# Save controls
-#snapshot_dt = 0.1
-#checkpoint_dt = 5.0
-#max_dt = 1e-4
 
 # Time/forcing controls
 bc_time_offset = 0.0
@@ -183,20 +263,16 @@ use_ramp = (restart_mode == "none")
 # -------------------------
 # Parameters
 # -------------------------
-#Ri, Ro = 1.0, 8.0
-#Nphi, Nr = 512, 512
-#Re_target = 2.0   # or 60.0
+
 Rref = 1.0      # Chosen reference Radius
 Omega_ref = 2*np.pi # Chosen reference frequency
 nu = (Rref**2) *  Omega_ref / Re_target    # since Rref=1
 
-#Amp = 0.2  # set to 0.0 for the “should stay at rest” test
 
 dealias = 3/2
 dtype = np.float64
 
 timestepper = d3.SBDF2
-
 
 # -------------------------
 # Minimal run-time guardrails
