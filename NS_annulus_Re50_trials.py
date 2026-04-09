@@ -127,14 +127,14 @@ print(f"MPI hello from rank {rank} of {size}", flush=True)
 # -------------------------
 
 base_run_root = "/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus"
-case_label = "Re50_trials"
+case_label = "Re50_trials_Ap01"
 segment_label = "seg02_restart_t200_snap1"
 run_dir = os.path.join(base_run_root, case_label, segment_label)
 
 Re_target = 50.0
 
 restart_mode = "full"
-restart_file = "/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus/Re50_trials/seg01_start_t100_snap1/checkpoints/checkpoints_s10.h5"
+restart_file = "/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus/Re50_trials_Ap01/seg01_start_t100_snap1/checkpoints/checkpoints_s11.h5"
 restart_index = -1
 
 segment_duration = 100.01
@@ -146,7 +146,7 @@ max_dt = 1e-4
 Ri, Ro = 1.0, 8.0
 Nphi, Nr = 256, 512
 
-Amp = .1
+Amp = .01
 
 if rank == 0:
     logger.info(f"run_dir = {run_dir}")
