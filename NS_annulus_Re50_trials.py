@@ -66,10 +66,6 @@ Restart modes
       start from rest
 - restart_mode = "full"
       exact continuation from a checkpoint file
-- restart_mode = "u_only"
-      load velocity only, reset pressure/tau fields
-- restart_mode = "u_refine"
-      interpolate saved velocity onto a new grid
 
 Time forcing / ramp
 -------------------
@@ -103,13 +99,14 @@ Notes
       u['g'][1] = u_r
 - In MPI mode, detailed diagnostics are intended to be done in postprocessing.
 """
+
 import numpy as np
 import dedalus.public as d3
 import logging
-import h5py
-from scipy.interpolate import RegularGridInterpolator
 from mpi4py import MPI
 import os
+from pathlib import Path
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -122,13 +119,6 @@ size = comm.size
 
 print(f"MPI hello from rank {rank} of {size}", flush=True)
 
-# -------------------------
-# Case / segment organization
-# -------------------------
-
-from pathlib import Path
-import re
-
 # ============================================================
 # User-set run parameters
 # ============================================================
@@ -137,11 +127,11 @@ base_run_root = Path("/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/deda
 Re_target = 50.0
 Amp       = 0.1
 
-t0 = 0.0     # physical start time of this segment
-t1 = 10.0     # physical end time of this segment
+t0 = 10.0
+t1 = 100.0
 
-restart_index = -1   # usually last saved state in checkpoint file
-manual_restart_file = ""   # leave empty for automatic restart lookup
+restart_index = -1
+manual_restart_file = ""   # optional explicit override
 
 checkpoint_dt = 1.0
 snapshot_dt   = 50.0
@@ -152,15 +142,11 @@ Nphi, Nr = 256, 512
 
 
 # ============================================================
-# Helpers for clean naming
+# Naming helpers
 # ============================================================
+SET_RE = re.compile(r"_s(\d+)(?:\.h5)?$")
+
 def amp_tag(a, ndp=8):
-    """
-    0.1   -> p1
-    0.01  -> p01
-    0.001 -> p001
-    1.25  -> 1p25
-    """
     s = f"{a:.{ndp}f}".rstrip("0").rstrip(".")
     if s.startswith("0."):
         s = "p" + s[2:]
@@ -170,11 +156,6 @@ def amp_tag(a, ndp=8):
     return s
 
 def time_tag(t, width=8, ndp=2):
-    """
-    0.0    -> 00000p00
-    100.0  -> 00100p00
-    100.01 -> 00100p01
-    """
     return f"{t:0{width}.{ndp}f}".replace(".", "p")
 
 def case_name(Re, amp):
@@ -183,25 +164,64 @@ def case_name(Re, amp):
 def segment_name(t0, t1):
     return f"seg_t{time_tag(t0)}_to_t{time_tag(t1)}"
 
-def checkpoint_sort_key(path_obj):
-    """
-    Sort checkpoints_s1.h5, checkpoints_s2.h5, ..., checkpoints_s10.h5 correctly.
-    """
-    m = re.search(r"_s(\d+)\.h5$", path_obj.name)
+def set_num(path_obj):
+    m = SET_RE.search(path_obj.name)
     return int(m.group(1)) if m else -1
 
-def latest_checkpoint_file(checkpoint_dir):
-    checkpoint_dir = Path(checkpoint_dir)
-    files = sorted(checkpoint_dir.glob("*.h5"), key=checkpoint_sort_key)
-    if not files:
-        raise FileNotFoundError(f"No checkpoint files found in {checkpoint_dir}")
-    return str(files[-1])
+def find_previous_segment_dir(case_dir, t0):
+    """
+    Find the most recent segment directory in this case whose end time is t0.
+    Supports 0->10 followed by 10->100, then 100->200, etc.
+    """
+    case_dir = Path(case_dir)
+    endtag = time_tag(t0)
+    matches = [
+        p for p in case_dir.iterdir()
+        if p.is_dir() and p.name.endswith(f"_to_t{endtag}")
+    ]
+    if not matches:
+        raise FileNotFoundError(
+            f"No previous segment ending at t={t0} found in {case_dir}"
+        )
+    matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return matches[0]
 
-def previous_segment_bounds(t0, t1):
-    dt = t1 - t0
-    if dt <= 0:
-        raise ValueError(f"Need t1 > t0, got t0={t0}, t1={t1}")
-    return t0 - dt, t0
+def latest_checkpoint_file(checkpoint_root):
+    """
+    Find the newest checkpoint set in a Dedalus checkpoint folder.
+    """
+    checkpoint_root = Path(checkpoint_root)
+    if not checkpoint_root.exists():
+        raise FileNotFoundError(f"Checkpoint folder does not exist: {checkpoint_root}")
+
+    top_files = sorted(checkpoint_root.glob("checkpoints_s*.h5"), key=set_num)
+    if top_files:
+        return str(top_files[-1])
+
+    set_dirs = sorted(
+        [p for p in checkpoint_root.iterdir()
+         if p.is_dir() and re.match(r"^checkpoints_s\d+$", p.name)],
+        key=set_num
+    )
+    if not set_dirs:
+        raise FileNotFoundError(f"No checkpoint sets found in {checkpoint_root}")
+
+    latest_set = set_dirs[-1]
+
+    joint_inside = latest_set / f"{latest_set.name}.h5"
+    if joint_inside.exists():
+        return str(joint_inside)
+
+    h5s = sorted(latest_set.glob("*.h5"))
+    if not h5s:
+        raise FileNotFoundError(f"No .h5 files found inside {latest_set}")
+
+    p0_files = [f for f in h5s if f.name.endswith("_p0.h5")]
+    if p0_files:
+        return str(p0_files[0])
+
+    h5s.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return str(h5s[0])
 
 
 # ============================================================
@@ -213,66 +233,53 @@ segment_label = segment_name(t0, t1)
 case_dir = base_run_root / case_label
 run_dir  = case_dir / segment_label
 
-if manual_restart_file:
-    restart_mode = "checkpoint"
-    restart_file = manual_restart_file
+prev_segment_dir = None
 
+if manual_restart_file:
+    restart_mode = "full"
+    restart_file = manual_restart_file
 elif abs(t0) < 1e-14:
     restart_mode = "none"
     restart_file = ""
-
 else:
-    prev_t0, prev_t1 = previous_segment_bounds(t0, t1)
-    prev_segment_label = segment_name(prev_t0, prev_t1)
-    prev_checkpoint_dir = case_dir / prev_segment_label / "checkpoints"
-    restart_file = latest_checkpoint_file(prev_checkpoint_dir)
-    restart_mode = "checkpoint"
+    prev_segment_dir = find_previous_segment_dir(case_dir, t0)
+    restart_file = latest_checkpoint_file(prev_segment_dir / "checkpoints")
+    restart_mode = "full"
 
 segment_duration = t1 - t0
 
-
-# ============================================================
-# Print a summary to make mistakes obvious
-# ============================================================
 print("--------------------------------------------------")
-print(f"case_label     = {case_label}")
-print(f"segment_label  = {segment_label}")
-print(f"run_dir        = {run_dir}")
-print(f"restart_mode   = {restart_mode}")
-print(f"restart_file   = {restart_file if restart_file else '(none)'}")
-print(f"segment t0->t1 = {t0} -> {t1}")
+print(f"case_label       = {case_label}")
+print(f"segment_label    = {segment_label}")
+print(f"run_dir          = {run_dir}")
+print(f"prev_segment_dir = {prev_segment_dir if prev_segment_dir else '(none)'}")
+print(f"restart_mode     = {restart_mode}")
+print(f"restart_file     = {restart_file if restart_file else '(none)'}")
+print(f"segment t0->t1   = {t0} -> {t1}")
 print("--------------------------------------------------")
-
-
-
 
 if rank == 0:
     logger.info(f"run_dir = {run_dir}")
-
-if rank == 0:
     os.makedirs(run_dir, exist_ok=True)
 comm.Barrier()
-
 
 # Time/forcing controls
 bc_time_offset = 0.0
 ramp_time = 1.0
 use_ramp = (restart_mode == "none")
 
-
 # -------------------------
 # Parameters
 # -------------------------
-
-Rref = 1.0      # Chosen reference Radius
-Omega_ref = 2*np.pi # Chosen reference frequency
-nu = (Rref**2) *  Omega_ref / Re_target    # since Rref=1
-
+Rref = 1.0
+Omega_ref = 2*np.pi
+nu = (Rref**2) * Omega_ref / Re_target
 
 dealias = 3/2
 dtype = np.float64
-
 timestepper = d3.SBDF2
+
+
 
 # -------------------------
 # Minimal run-time guardrails
@@ -374,79 +381,6 @@ def set_outer_bc(t):
     u_outer['g'][1] =  U * np.cos(phi_e)   # u_r
     u_outer.change_scales(1)               # good habit: keep coeff scale consistent
 
-def _first_dataset_in_group(g):
-    """Return the first dataset in an HDF5 group."""
-    key = list(g.keys())[0]
-    return np.array(g[key])
-
-def read_u_task_from_h5(filename, index=-1):
-    """
-    Read saved velocity task and coordinate arrays from a Dedalus HDF5 file.
-
-    Returns:
-        sim_time_old : float
-        uphi_old     : array, shape (nphi_old, nr_old)
-        ur_old       : array, shape (nphi_old, nr_old)
-        phi_old      : array, shape (nphi_old,)
-        r_old        : array, shape (nr_old,)
-    """
-    with h5py.File(filename, "r") as f:
-        sim_time_old = float(f["scales/sim_time"][index])
-
-        udata = np.array(f["tasks/u"][index])
-
-        # Handle either component-first or component-last storage
-        if udata.ndim != 3:
-            raise ValueError(f"Expected 3D saved u task after time indexing, got shape {udata.shape}")
-
-        if udata.shape[0] == 2:
-            # shape = (2, nphi, nr)
-            uphi_old = udata[0]
-            ur_old   = udata[1]
-        elif udata.shape[-1] == 2:
-            # shape = (nphi, nr, 2)
-            uphi_old = udata[..., 0]
-            ur_old   = udata[..., 1]
-        else:
-            raise ValueError(f"Could not identify component axis in saved u with shape {udata.shape}")
-
-        # Read saved coordinate arrays
-        phi_old = _first_dataset_in_group(f["scales/phi"]).squeeze()
-        r_old   = _first_dataset_in_group(f["scales/r"]).squeeze()
-
-        # Reduce to 1D if needed
-        if phi_old.ndim > 1:
-            phi_old = phi_old[:, 0]
-        if r_old.ndim > 1:
-            r_old = r_old[0, :]
-
-    return sim_time_old, uphi_old, ur_old, phi_old, r_old
-
-
-def interp_periodic_phi_r(phi_old, r_old, q_old, phi_new, r_new):
-    """
-    Interpolate a scalar field q_old(phi,r) from old grid to new grid.
-    Assumes periodicity in phi.
-    """
-    # Periodic extension in phi
-    phi_ext = np.concatenate([phi_old, [phi_old[0] + 2*np.pi]])
-    q_ext = np.concatenate([q_old, q_old[0:1, :]], axis=0)
-
-    interp = RegularGridInterpolator(
-        (phi_ext, r_old),
-        q_ext,
-        method="linear",
-        bounds_error=False,
-        fill_value=None
-    )
-
-    pts = np.column_stack([
-        np.mod(phi_new.ravel(), 2*np.pi),
-        r_new.ravel()
-    ])
-
-    q_new = interp(pts).reshape(phi_new.shape)
-    return q_new
 
 
 # -------------------------
@@ -465,73 +399,28 @@ problem.add_equation("integ(p) = 0")
 
 solver = problem.build_solver(timestepper)
 
-
 # -------------------------
 # Restart handling
 # -------------------------
-file_handler_mode = "overwrite"   # always write a new segment folder
+file_handler_mode = "overwrite"
 
 if restart_mode == "full":
     write, initial_dt = solver.load_state(restart_file, index=restart_index)
 
-    # For full restart, solver.sim_time is restored from file
+    if abs(solver.sim_time - t0) > max(10*max_dt, 1e-10):
+        raise RuntimeError(
+            f"Restart landed at sim_time={solver.sim_time:.12f}, expected t0={t0:.12f}"
+        )
+
     phys_start_time = solver.sim_time
     bc_time_offset = 0.0
-    solver.stop_sim_time = solver.sim_time + segment_duration
+    solver.stop_sim_time = t1
 
-    logger.info(f"Loaded full state from {restart_file}, write={write}, saved_dt={initial_dt:.3e}")
-    logger.info(f"Continuing from physical time {phys_start_time:.6f} to {solver.stop_sim_time:.6f}")
+    logger.info(f"Loaded full state from {restart_file}")
+    logger.info(f"Restart sim_time = {solver.sim_time:.12f}")
+    logger.info(f"Continuing from physical time {phys_start_time:.6f} to {t1:.6f}")
 
-elif restart_mode == "u_only":
-    # Same-resolution velocity restart from a snapshot-like file
-    with h5py.File(restart_file, "r") as f:
-        u.load_from_hdf5(f, index=restart_index, task="u")
-        bc_time_offset = float(f["scales/sim_time"][restart_index])
-
-    p['g'] = 0
-    tau_p['g'] = 0
-    tau_u1['g'] = 0
-    tau_u2['g'] = 0
-
-    initial_dt = max_dt
-    phys_start_time = bc_time_offset
-
-    # solver.sim_time starts at 0 in this mode
-    solver.stop_sim_time = segment_duration
-
-    logger.info(f"Loaded velocity IC from {restart_file}")
-    logger.info(f"Using BC time offset = {bc_time_offset:.6f}")
-    logger.info(f"Physical time will run from {phys_start_time:.6f} to {phys_start_time + segment_duration:.6f}")
-
-elif restart_mode == "u_refine":
-    sim_time_old, uphi_old, ur_old, phi_old, r_old = read_u_task_from_h5(restart_file, index=restart_index)
-
-    phi_new, r_new = dist.local_grids(annulus, scales=1)
-
-    uphi_new = interp_periodic_phi_r(phi_old, r_old, uphi_old, phi_new, r_new)
-    ur_new   = interp_periodic_phi_r(phi_old, r_old, ur_old,   phi_new, r_new)
-
-    u.change_scales(1)
-    u['g'][0] = uphi_new
-    u['g'][1] = ur_new
-    u.change_scales(1)
-
-    p['g'] = 0
-    tau_p['g'] = 0
-    tau_u1['g'] = 0
-    tau_u2['g'] = 0
-
-    bc_time_offset = sim_time_old
-    initial_dt = max_dt
-    phys_start_time = bc_time_offset
-
-    # solver.sim_time starts at 0 here too
-    solver.stop_sim_time = segment_duration
-
-    logger.info(f"Loaded refined velocity IC from {restart_file}")
-    logger.info(f"Physical time will run from {phys_start_time:.6f} to {phys_start_time + segment_duration:.6f}")
-
-else:
+elif restart_mode == "none":
     u.change_scales(dealias)
     u['g'][0] = 0.0
     u['g'][1] = 0.0
@@ -540,18 +429,25 @@ else:
     initial_dt = max_dt
     bc_time_offset = 0.0
     phys_start_time = 0.0
-    solver.stop_sim_time = segment_duration
+    solver.stop_sim_time = t1
 
-    logger.info(f"Starting from rest; physical time will run from 0 to {segment_duration:.6f}")
+    logger.info(f"Starting from rest; physical time will run from 0 to {t1:.6f}")
 
+else:
+    raise ValueError(
+        f"Unsupported restart_mode = {restart_mode!r}. "
+        "Expected 'none' or 'full'."
+    )
 
+# -------------------------
+# Output handlers
+# -------------------------
 snapshots = solver.evaluator.add_file_handler(
     os.path.join(run_dir, 'snapshots'),
     sim_dt=snapshot_dt,
     max_writes=200,
     mode=file_handler_mode
 )
-
 snapshots.add_task(u, name='u')
 snapshots.add_task(p, name='p')
 snapshots.add_task(omega, name='vorticity')
@@ -564,6 +460,9 @@ checkpoints = solver.evaluator.add_file_handler(
     mode=file_handler_mode
 )
 checkpoints.add_tasks(solver.state)
+
+
+
 
 if rank == 0:
     with open(os.path.join(run_dir, "run_info.txt"), "w") as fp:
