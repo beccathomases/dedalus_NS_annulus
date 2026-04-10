@@ -125,7 +125,7 @@ print(f"MPI hello from rank {rank} of {size}", flush=True)
 base_run_root = Path("/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus")
 
 Re_target = 50.0
-Amp       = 0.01
+Amp       = 0.001
 
 t0 = 0.0
 t1 = 100.01
