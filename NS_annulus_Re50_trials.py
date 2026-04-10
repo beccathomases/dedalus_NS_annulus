@@ -125,12 +125,12 @@ print(f"MPI hello from rank {rank} of {size}", flush=True)
 base_run_root = Path("/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus")
 
 Re_target = 50.0
-Amp       = 0.1
+Amp       = 0.01
 
 t0 = 200.0
 t1 = 500.01
 
-manual_restart_file = "/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus/Re50_Ap1/seg_t00099p00_to_t00200p01/checkpoints/checkpoints_s11.h5"
+manual_restart_file = "/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus/Re50_Ap01/seg_t00100p00_to_t00200p01/checkpoints/checkpoints_s11.h5"
 restart_index = -1
 
 #t0 = 99.0
