@@ -136,8 +136,8 @@ t1 = 200.01
 #t0 = 99.0
 #t1 = 200.01
 
-#restart_index = -1
-#manual_restart_file = ""   # optional explicit override
+restart_index = -1
+manual_restart_file = ""   # optional explicit override
 
 checkpoint_dt = 10.0
 snapshot_dt   = 50.0
