@@ -135,7 +135,7 @@ manual_restart_file = ""   # optional explicit override
 
 checkpoint_dt = 10.0
 snapshot_dt   = 50.0
-max_dt        = 1e-4
+max_dt        = 5e-4
 
 Ri, Ro = 1.0, 8.0
 Nphi, Nr = 256, 512
