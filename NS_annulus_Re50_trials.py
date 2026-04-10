@@ -130,8 +130,14 @@ Amp       = 0.1
 t0 = 99.0
 t1 = 200.01
 
+manual_restart_file = "/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus/Re50_Ap1/seg_t00010p00_to_t00100p00/checkpoints/checkpoints_s90.h5"
 restart_index = -1
-manual_restart_file = ""   # optional explicit override
+
+#t0 = 99.0
+#t1 = 200.01
+
+#restart_index = -1
+#manual_restart_file = ""   # optional explicit override
 
 checkpoint_dt = 10.0
 snapshot_dt   = 50.0
