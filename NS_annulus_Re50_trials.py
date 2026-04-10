@@ -125,15 +125,15 @@ print(f"MPI hello from rank {rank} of {size}", flush=True)
 base_run_root = Path("/work/pi_bthomases_smith_edu/bthomases_smith_edu/runs/dedalus_NS_annulus")
 
 Re_target = 50.0
-Amp       = 0.1
+Amp       = 0.01
 
-t0 = 10.0
-t1 = 100.0
+t0 = 0.0
+t1 = 100.01
 
 restart_index = -1
 manual_restart_file = ""   # optional explicit override
 
-checkpoint_dt = 1.0
+checkpoint_dt = 10.0
 snapshot_dt   = 50.0
 max_dt        = 1e-4
 
